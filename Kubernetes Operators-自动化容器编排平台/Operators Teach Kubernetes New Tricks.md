@@ -8,13 +8,15 @@ Before we begin to describe how Operators do these jobs, let’s define a few Ku
 
 Kubernetes automates the lifecycle of a stateless application, such as a static web server. Without state, any instances of an application are interchangeable. This simple web server retrieves files and sends them on to a visitor’s browser. Because the server is not tracking state or storing input or data of any kind, when one server instance fails, Kubernetes can replace it with another. Kubernetes refers to these instances, each a copy of an application running on the cluster, as *replicas*.
 
-A Kubernetes cluster is a collection of computers, called nodes. All cluster work runs on one, some, or all of a cluster’s nodes. The basic unit of work, and of replication, is the *pod*. A pod is a group of one or more Linux containers with common resources like networking, storage, and access to shared memory
+A Kubernetes cluster is a collection of computers, called nodes. All cluster work runs on one, some, or all of a cluster’s nodes. The basic unit of work, and of replication, is the *pod*. A pod is a group of one or more Linux containers with common resources like networking, storage, and access to shared memory.
 
 At a high level, a Kubernetes cluster can be divided into two planes. The *control plane* is, in simple terms, Kubernetes itself. A collection of pods comprises the control plane and implements the Kubernetes application programming interface (API) and cluster orchestration logic.
 
 The *application plane*, or data plane, is everything else. It is the group of nodes where application pods run. One or more nodes are usually dedicated to running applications, while one or more nodes are often sequestered to run only control plane pods. As with application pods, multiple replicas of control plane components can run on multiple controller nodes to provide redundancy.
 
 The controllers of the control plane implement control loops that repeatedly compare the desired state of the cluster to its actual state. When the two diverge, a controller takes action to make them match. Operators extend this behavior. The schematic in Figure 1-1 shows the major control plane components, with worker nodes running application workloads.
+
+![Figure 1-1. kubernetes control plane and worker nodes.png](https://github.com/lang1lang/Technical-Knowledge/blob/master/Kubernetes%20Operators-%E8%87%AA%E5%8A%A8%E5%8C%96%E5%AE%B9%E5%99%A8%E7%BC%96%E6%8E%92%E5%B9%B3%E5%8F%B0/images/Figure%201-1.%20kubernetes%20control%20plane%20and%20worker%20nodes.png?raw=true)
 
 While a strict division between the control and application planes is a convenient mental model and a common way to deploy a Kubernetes cluster to segregate workloads, the control plane components are a collection of pods running on nodes, like any other application. In small clusters, control plane components are often sharing the same node or two with application workloads.
 
