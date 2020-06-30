@@ -76,4 +76,3 @@ An Operator is like an automated Site Reliability Engineer for its application. 
 
 Operators work by extending the Kubernetes control plane and API. In its simplest form, an Operator adds an endpoint to the Kubernetes API, called a *custom resource* (CR), along with a control plane component that monitors and maintains resources of the new type. This Operator can then take action based on the resource's state. This is illustrated in Figure 1-2.
 
-kb get 
