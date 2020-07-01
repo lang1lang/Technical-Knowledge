@@ -375,13 +375,233 @@ Status:
   Service Name: example-etcd-cluster-client
 ```
 
+# Exercising etcd
 
+You now have a running etcd cluster. The etcd Operator creates a Kubernetes *service* in the etcd cluster’s namespace. A service is an endpoint where clients can obtain access to a group of pods, even though the members of the group may change. A service by default has a DNS name visible in the cluster. The Operator constructs the name of the service used by clients of the etcd API by appending-client to the etcd cluster name defined in the CR. Here, the client service is named example-etcd-cluster-client, and it listens on the usual etcd client IP port, 2379. Kubectl can list the services associated with the etcd cluster:
 
+```
+$ kubectl get services --selector etcd_cluster=example-etcd-cluster
+NAME TYPE CLUSTER-IP ... PORT(S) AGE
+example-etcd-cluster ClusterIP None ... 2379/TCP,2380/TCP 21h
+example-etcd-cluster-client ClusterIP 10.96.46.231 ... 2379/TCP 21h
+```
 
+> The other service created by the etcd Operator, example-etcd-cluster, is utilized by etcd cluster members rather than etcd API clients.
 
+You can run the etcd client on the cluster and use it to connect to the client service and interact with the etcd API. The following command lands you in the shell of an etcd container:
 
+```
+$ kubectl run --rm -i --tty etcdctl --image quay.io/coreos/etcd \
+ --restart=Never -- /bin/sh
+```
 
+From the etcd container’s shell, create and read a key-value pair in etcd with etcdctl’s put and get verbs:
 
+```
+$ export ETCDCTL_API=3
+$ export ETCDCSVC=http://example-etcd-cluster-client:2379
+$ etcdctl --endpoints $ETCDCSVC put foo bar
+$ etcdctl --endpoints $ETCDCSVC get foo
+foo
+bar
+```
 
+Repeat these queries or run new put and get commands in an etcdctl shell after each of the changes you go on to make. You’ll see the continuing availability of the etcd API service as the etcd Operator grows the cluster, replaces members, and upgrades the version of etcd.
 
+## Scaling the etcd Cluster
 
+You can grow the etcd cluster by changing the declared size specification. Edit *etcd-cluster-cr.yaml* and change size from 3 to 4 etcd members. Apply the changes to the EtcdCluster CR:
+
+```
+$ kubectl apply -f etcd-cluster-cr.yaml
+```
+
+Checking the running pods shows the Operator adding a new etcd member to the etcd cluster:
+
+```
+$ kubectl get pods
+NAME READY STATUS RESTARTS AGE
+etcd-operator-594fbd565f-4fm8k 1/1 Running 1 16m
+example-etcd-cluster-95gqrthjbz 1/1 Running 2 15m
+example-etcd-cluster-m9ftnsk572 1/1 Running 0 15m
+example-etcd-cluster-pjqhm8d4qj 1/1 Running 0 15m
+example-etcd-cluster-w5l67llqq8 0/1 Init:0/1 0 3s
+```
+
+> You can also try kubectl edit etcdcluster/example-etcd-cluster to drop into an editor and make a live change to the cluster size.
+
+## Failure and Automated Recovery
+
+You saw the etcd Operator replace a failed member back in Chapter 1. Before you see it live, it’s worth reiterating the general steps you’d have to take to handle this manually. Unlike a stateless program, no etcd pod runs in a vacuum. Usually, a human etcd “operator” has to notice a member’s failure, execute a new copy, and provide it with configuration so it can join the etcd cluster with the remaining members. The etcd Operator understands etcd’s internal state and makes the recovery automatic.
+
+### Recovering from a failed etcd member
+
+Run a quick kubectl get pods -l app=etc to get a list of the pods in your etcd cluster. Pick one you don’t like the looks of, and tell Kubernetes to delete it:
+
+```
+$ kubectl delete pod example-etcd-cluster-95gqrthjbz
+pod "example-etcd-cluster-95gqrthjbz" deleted
+```
+
+The Operator notices the difference between reality on the cluster and the desired state, and adds an etcd member to replace the one you deleted. You can see the new etcd cluster member in the PodInitializing state when retrieving the list of pods, as shown here:
+
+```
+$ kubectl get pods -w
+NAME READY STATUS RESTARTS AGE
+etcd-operator-594fbd565f-4fm8k 1/1 Running 1 18m
+example-etcd-cluster-m9ftnsk572 1/1 Running 0 17m
+example-etcd-cluster-pjqhm8d4qj 1/1 Running 0 17m
+example-etcd-cluster-r6cb8g2qqw 0/1 PodInitializing 0 31s
+```
+
+The -w switch tells kubectl to “watch” the list of pods and to print updates on its standard output with every change to the list. You can stop the watch and return to your shell prompt with Ctrl-C.
+
+You can check the Events to see the recovery actions logged in the example-etcd-cluster CR:
+
+```
+$ kubectl describe etcdcluster/example-etcd-cluster
+[...]
+Events:
+ Normal Replacing Dead Member 4m etcd-operator-589c65bd9f-hpkc6
+ The dead member example-etcd-cluster-95gqrthjbz is being replaced
+ Normal Member Removed 4m etcd-operator-589c65bd9f-hpkc6
+ Existing member example-etcd-cluster-95gqrthjbz removed from the cluster
+[...]
+```
+
+Throughout the recovery process, if you fire up the etcd client pod again, you can make requests to the etcd cluster, including a check on its general health:
+
+```
+$ kubectl run --rm -i --tty etcdctl --image quay.io/coreos/etcd \
+ --restart=Never -- /bin/sh
+If you don't see a command prompt, try pressing enter.
+$ etcdctl --endpoints http://example-etcd-cluster-client:2379 cluster-health
+member 5ee0dd47065a4f55 is healthy: got healthy result ...
+member 70baca4290889c4a is healthy: got healthy result ...
+member 76cd6c58798a7a4b is healthy: got healthy result ...
+cluster is healthy
+$ exit
+pod "etcdctl" deleted
+```
+
+The etcd Operator recovers from failures in its complex, stateful application the same way Kubernetes automates recoveries for stateless apps. That is conceptually simple but operationally powerful. Building on these concepts, Operators can perform more advanced tricks, like upgrading the software they manage. Automating upgrades can have a positive impact on security, just by making sure things stay up to date. When an Operator performs rolling upgrades of its application while maintaining service availability, it’s easier to keep software patched with the latest fixes.
+
+## Upgrading etcd Clusters
+
+If you happen to be an etcd user already, you may have noticed we specified an older version, 3.1.10. We contrived this so we could explore the etcd Operator’s upgrade skills.
+
+### Upgrading the hard way
+
+At this point, you have an etcd cluster running version 3.1.10. To upgrade to etcd 3.2.13, you need to perform a series of steps. Since this book is about Operators, and not etcd administration, we’ve condensed the process presented here, leaving aside networking and host-level concerns to outline the manual upgrade process. The steps to follow to upgrade manually are:
+
+1. Check the version and health of each etcd node.
+2. Create a snapshot of the cluster state for disaster recovery
+3. Stop one etcd server. Replace the existing version with the v3.2.13 binary. Start the new version.
+4. Repeat for each etcd cluster member—at least two more times in a three-member cluster.
+
+For the gory details, see the etcd upgrade documentation.
+
+### The easy way: Let the Operator do it
+
+With a sense of the repetitive and error-prone process of a manual upgrade, it’s easier to see the power of encoding that etcd-specific knowledge in the etcd Operator. The Operator can manage the etcd version, and an upgrade becomes a matter of declaring a new desired version in an EtcdCluster resource.
+
+### Triggering etcd upgrade
+
+Get the version of the current etcd container image by querying some etcd-cluster pod, filtering the output to see just the version:
+
+```
+$ kubectl get pod example-etcd-cluster-795649v9kq -o yaml | grep "image:" | uniq
+image: quay.io/coreos/etcd:v3.1.10
+image: busybox:1.28.0-glibc
+```
+
+Or, since you added an EtcdCluster resource to the Kubernetes API, you can instead summarize the Operator’s picture of example-etcd-cluster directly by using kubectl describe as you did earlier:
+
+```
+$ kubectl describe etcdcluster/example-etcd-cluster
+```
+
+You’ll see the cluster is running etcd version 3.1.10, as specified in the file *etcd-cluster-cr.yaml* and the CR created from it.
+
+Edit *etcd-cluster-cr.yaml* and change the version spec from 3.1.10 to 3.2.13. Then apply the new spec to the resource on the cluster:
+
+```
+$ kubectl apply -f etcd-cluster-cr.yaml
+```
+
+Use the describe command again and take a look at the current and target versions, as well as the member upgrade notices in the Events stanza:
+
+```
+$ kubectl describe etcdcluster/example-etcd-cluster
+Name: example-etcd-cluster
+Namespace: default
+API Version: etcd.database.coreos.com/v1beta2
+Kind: EtcdCluster
+[...]
+Status:
+  Conditions:
+    [...]
+    Message: upgrading to 3.2.13
+    Reason: Cluster upgrading
+    Status: True
+    Type: Upgrading
+  Current Version: 3.1.10
+  [...]
+  Size: 3
+  Target Version: 3.2.13
+Events:
+  Type Reason Age From ...
+  ---- ------ --- ---- ---
+  Normal Member Upgraded 3s etcd-operator-594fbd565f-4fm8k ...
+  Normal Member Upgraded 5s etcd-operator-594fbd565f-4fm8k ...
+```
+
+### Upgrade the upgrade
+
+With some kubectl tricks, you can make the same edit directly through the Kubernetes API. This time, let’s upgrade from 3.2.13 to the latest minor version of etcd available at the time of this writing, version 3.3.12:
+
+```
+$ kubectl patch etcdcluster example-etcd-cluster --type='json' \
+ -p '[{"op": "replace", "path": "/spec/version", "value":3.3.12}]'
+```
+
+Remember you can always make this change in the etcd cluster’s CR manifest and then apply it with kubectl, as you did to trigger the first upgrade.
+
+Consecutive kubectl describe etcdcluster/example-etcd-cluster commands
+
+will show the transition from the old version to a target version until that becomes the current version, at which point you’ll see Current Version: 3.3.12. The Events section records each of those upgrades:
+
+```
+ Normal Member Upgraded 1m etcd-operator-594fbd565f-4fm8k
+ Member example-etcd-cluster-pjqhm8d4qj upgraded from 3.1.10 to 3.2.23
+ Normal Member Upgraded 27s etcd-operator-594fbd565f-4fm8k
+ Member example-etcd-cluster-r6cb8g2qqw upgraded from 3.2.23 to 3.3.12
+```
+
+# Cleaning Up
+
+Before proceeding, it will be helpful if you remove the resources you created and manipulated to experiment with the etcd Operator. As shown in the following shell excerpt, you can remove resources with the manifests used to create them. First, ensure your current working directory is *ch03* inside the *chapters* Git repository you cloned earlier (cd chapters/ch03):
+
+```
+$ kubectl delete -f etcd-operator-sa.yaml
+$ kubectl delete -f etcd-operator-role.yaml
+$ kubectl delete -f etcd-operator-rolebinding.yaml
+$ kubectl delete -f etcd-operator-crd.yaml
+$ kubectl delete -f etcd-operator-deployment.yaml
+$ kubectl delete -f etcd-cluster-cr.yaml
+serviceaccount "etcd-operator-sa" deleted
+role.rbac.authorization.k8s.io "etcd-operator-role" deleted
+rolebinding.rbac.authorization.k8s.io "etcd-operator-rolebinding" deleted
+customresourcedefinition.apiextensions.k8s.io \
+ "etcdclusters.etcd.database.coreos.com" deleted
+deployment.apps "etcd-operator" deleted
+etcdcluster.etcd.database.coreos.com "example-etcd-cluster" deleted
+```
+
+# Summary
+
+We use the etcd API here with the etcdctl tool for the sake of simplicity, but an application uses etcd with the same API requests, storing, retrieving, and watching keys and ranges. The etcd Operator automates the etcd cluster part, making reliable key-value storage available to more applications.
+
+Operators get considerably more complex, managing a variety of concerns, as you would expect from application-specific extensions. Nevertheless, most Operators follow the basic pattern discernable in the etcd Operator: **a CR specifies some desired state**, such as the version of an application, and **a custom controller watches the resource, maintaining the desired state on the cluster**.
+
+You now have a Kubernetes cluster for working with Operators. You’ve seen how to deploy an Operator and triggered it to perform application-specific state reconciliation. Next, we’ll introduce the Kubernetes API elements on which Operators build before introducing the Operator Framework and SDK, the toolkit you’ll use to construct an Operator.
